@@ -3,6 +3,8 @@ import gzip
 import argparse
 import csv
 import datetime
+import pytz
+import math
 from pytz import timezone
 
 from influxdb import InfluxDBClient
@@ -12,6 +14,15 @@ epoch = timezone('UTC').localize(epoch_naive)
 
 def unix_time_millis(dt):
     return int((dt - epoch).total_seconds() * 1000)
+
+def convert_seconds_to_dt(s):
+    return datetime.datetime.fromtimestamp(s, tz=pytz.utc)
+
+def convert_microseconds_to_dt(us):
+    return datetime.datetime.fromtimestamp(us/1000000.0, tz=pytz.utc)
+
+def convert_milliseconds_to_dt(ms):
+    return datetime.datetime.fromtimestamp(ms/1000.0, tz=pytz.utc)
 
 ##
 ## Check if data type of field is float
@@ -44,6 +55,8 @@ def isinteger(value):
         except:
             return False
 
+def digits(val):
+    return int(math.log10(val)) + 1
 
 def loadCsv(inputfilename, servername, user, password, dbname, metric, 
     timecolumn, timeformat, tagcolumns, fieldcolumns, usegzip, 
