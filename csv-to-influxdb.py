@@ -12,6 +12,8 @@ from influxdb import InfluxDBClient
 epoch_naive = datetime.datetime.utcfromtimestamp(0)
 epoch = timezone('UTC').localize(epoch_naive)
 
+nan = set('NaN')
+
 def unix_time_millis(dt):
     return int((dt - epoch).total_seconds() * 1000)
 
@@ -28,11 +30,11 @@ def convert_milliseconds_to_dt(ms):
 ## Check if data type of field is float
 ##
 def isfloat(value):
-        try:
-            float(value)
-            return True
-        except:
-            return False
+    try:
+        float(value)
+        return True
+    except:
+        return False    
 
 def isbool(value):
     try:
@@ -47,24 +49,99 @@ def str2bool(value):
 ## Check if data type of field is int
 ##
 def isinteger(value):
-        try:
-            if(float(value).is_integer()):
-                return True
-            else:
-                return False
-        except:
+    try:
+        if(float(value).is_integer()):
+            return True
+        else:
             return False
+    except:
+        return False
+
+def isnan(value):
+    return value in nan
 
 def digits(val):
     return int(math.log10(val)) + 1
 
+def ts_to_dt(ts):
+    # Convert to datetime
+    d = digits(ts)
+    if d < 13:
+        return convert_seconds_to_dt(ts)
+    elif d < 16:
+        return convert_milliseconds_to_dt(ts)
+    else:
+        return convert_microseconds_to_dt(ts)
+
+def timefield_to_timestamp(tf, timeformat, datatimezone):
+    # If timestamp field is integer
+    if isinteger(tf):
+       datetime_naive = ts_to_dt(int(tf))
+    # Otherwise as string
+    else:
+        datetime_naive = datetime.datetime.strptime(tf, timeformat)    
+
+    if datetime_naive.tzinfo is None:
+        datetime_local = timezone(datatimezone).localize(datetime_naive)
+    else:
+        datetime_local = datetime_naive 
+
+    timestamp = unix_time_millis(datetime_local) * 1000000  # in nanoseconds
+
+    return timestamp, datetime_local
+
+def avoid_nan_fields(fields=None, nan_strs=["NaN"]):
+    if fields:
+        return True
+    else:
+        return False
+
+# Support Database&CSV colume mapping
+def field_mapping(fieldcolumns):
+    field_columes = []
+
+    for cm in fieldcolumns:
+        m = cm.split(':')
+        if len(m) > 1:
+            field_columes.append((m[0], m[1]))
+        else:
+            field_columes.append((m[0], m[0]))
+
+    # list of (csv_colume, database_colume)
+    return field_columes
+
+# Support:
+# 1. tags from colume mapping
+# 2. tags from specificed inputs
+def tags_mapping(tagcolumns):
+    tagcolumns = []
+    tagvalues = []
+
+    for cm in tagcolumns:
+        m = cm.split(':')
+        if len(m) > 1:
+            tagcolumns.append((m[0], m[1]))
+        else:
+            m = cm.split('=')
+            if len(m) > 1:
+                tagvalues.append((m[0], m[1]))
+            else:
+                tagcolumns.append((m[0], m[0]))
+
+    # tagcolumns: list of (csv_colume, database_tag_key)
+    # tagvalues: list of (database_tag_key, tag_value)
+    return tagcolumns, tagvalues
+
+
 def loadCsv(inputfilename, servername, user, password, dbname, metric, 
-    timecolumn, timeformat, tagcolumns, fieldcolumns, usegzip, 
-    delimiter, batchsize, create, datatimezone, usessl):
+            timecolumn, timeformat, tagcolumns, fieldcolumns, usegzip,
+            delimiter, batchsize, create, datatimezone, usessl, ignorenancolumns):
 
     host = servername[0:servername.rfind(':')]
     port = int(servername[servername.rfind(':')+1:])
     client = InfluxDBClient(host, port, user, password, dbname, ssl=usessl)
+    tagvalues = []
+    ignore_nan = False
 
     if(create == True):
         print('Deleting database %s'%dbname)
@@ -76,9 +153,14 @@ def loadCsv(inputfilename, servername, user, password, dbname, metric,
 
     # format tags and fields
     if tagcolumns:
-        tagcolumns = tagcolumns.split(',')
+        tagcolumns, tagvalues = tags_mapping(tagcolumns.split(','))
+
     if fieldcolumns:
-        fieldcolumns = fieldcolumns.split(',')
+        fieldcolumns = field_mapping(fieldcolumns.split(','))
+
+    if ignorenancolumns:
+        ignorenancolumns = field_mapping(ignorenancolumns.split(','))
+        ignore_nan = len(ignorenancolumns) > 0
 
     # open csv
     datapoints = []
@@ -87,33 +169,44 @@ def loadCsv(inputfilename, servername, user, password, dbname, metric,
     with inputfile as csvfile:
         reader = csv.DictReader(csvfile, delimiter=delimiter)
         for row in reader:
-            datetime_naive = datetime.datetime.strptime(row[timecolumn],timeformat)
 
-            if datetime_naive.tzinfo is None:
-                datetime_local = timezone(datatimezone).localize(datetime_naive)
-            else:
-                datetime_local = datetime_naive
+            # Ignore nan
+            if ignore_nan:
+                jump_to_next = False
+                for nancol in ignorenancolumns:
+                    if isnan(row[nancol[0]]):
+                        jump_to_next = True
+                        break
 
-            timestamp = unix_time_millis(datetime_local) * 1000000 # in nanoseconds
+                if jump_to_next:
+                    continue
 
+            # Parse timestamp
+            timestamp, datetime_local = timefield_to_timestamp(row[timecolumn], timeformat, datatimezone)
+
+            # assemble tags
             tags = {}
             for t in tagcolumns:
                 v = 0
                 if t in row:
-                    v = row[t]
-                tags[t] = v
+                    v = row[t[0]]
+                tags[t[1]] = v
 
+            for t in tagvalues:
+                tags[t[0]] = t[1]
+
+            # assemble fields
             fields = {}
             for f in fieldcolumns:
                 v = 0
                 if f in row:
-                    if (isfloat(row[f])):
-                        v = float(row[f])
-                    elif (isbool(row[f])):
-                        v = str2bool(row[f])
+                    if (isfloat(row[f[0]])):
+                        v = float(row[f[0]])
+                    elif (isbool(row[f[0]])):
+                        v = str2bool(row[f[0]])
                     else:
-                        v = row[f]
-                fields[f] = v
+                        v = row[f[0]]
+                fields[f[1]] = v
 
 
             point = {"measurement": metric, "time": timestamp, "fields": fields, "tags": tags}
@@ -194,6 +287,9 @@ if __name__ == "__main__":
     parser.add_argument('--tagcolumns', nargs='?', default='host',
                         help='List of csv columns to use as tags, separated by comma, e.g.: host,data_center. Default: host')
 
+    parser.add_argument('-x', '--ignorenancolumns', nargs='?', default='',
+                        help='List of csv columns use to test if nan, e.g.: host,data_center. Default: host')
+
     parser.add_argument('-g', '--gzip', action='store_true', default=False,
                         help='Compress before sending to influxdb.')
 
@@ -201,7 +297,7 @@ if __name__ == "__main__":
                         help='Batch size. Default: 5000.')
 
     args = parser.parse_args()
-    loadCsv(args.input, args.server, args.user, args.password, args.dbname, 
-        args.metricname, args.timecolumn, args.timeformat, args.tagcolumns, 
-        args.fieldcolumns, args.gzip, args.delimiter, args.batchsize, args.create, 
-        args.timezone, args.ssl)
+    loadCsv(args.input, args.server, args.user, args.password, args.dbname,
+            args.metricname, args.timecolumn, args.timeformat, args.tagcolumns,
+            args.fieldcolumns, args.gzip, args.delimiter, args.batchsize, args.create,
+            args.timezone, args.ssl, args.ignorenancolumns)

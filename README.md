@@ -70,3 +70,8 @@ timestamp,value,computer
 The following command will insert the file into a influxdb database:
 
 ```python csv-to-influxdb.py --dbname test --input data.csv --tagcolumns computer --fieldcolumns value```
+
+
+Mapping
+```python3 csv-to-influxdb.py -s 192.168.1.112:18442 --ssl --dbname 1MIN_OHLCV --input /Users/robi/Downloads/bitstampUSD_1-min_data_2012-01-01_to_2021-03-31.csv -m btc_usd --tagcolumns exchange=bitstamp --fieldcolumns Open:o,High:h,Low:l,Close:c,Volume_\(BTC\):v -x Open -tc Timestamp```
+
