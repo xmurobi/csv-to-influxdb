@@ -12,7 +12,7 @@ from influxdb import InfluxDBClient
 epoch_naive = datetime.datetime.utcfromtimestamp(0)
 epoch = timezone('UTC').localize(epoch_naive)
 
-nan = set('NaN')
+nan = set(['NaN'])
 
 def unix_time_millis(dt):
     return int((dt - epoch).total_seconds() * 1000)
@@ -113,14 +113,16 @@ def field_mapping(fieldcolumns):
 # Support:
 # 1. tags from colume mapping
 # 2. tags from specificed inputs
-def tags_mapping(tagcolumns):
+def tags_mapping(tagdefines):
     tagcolumns = []
     tagvalues = []
 
-    for cm in tagcolumns:
+    for cm in tagdefines:
+        # 1. tags defined in colume value(use :)
         m = cm.split(':')
         if len(m) > 1:
             tagcolumns.append((m[0], m[1]))
+        # 2. tags defined in static value(use =)
         else:
             m = cm.split('=')
             if len(m) > 1:
@@ -199,7 +201,7 @@ def loadCsv(inputfilename, servername, user, password, dbname, metric,
             fields = {}
             for f in fieldcolumns:
                 v = 0
-                if f in row:
+                if f[0] in row:
                     if (isfloat(row[f[0]])):
                         v = float(row[f[0]])
                     elif (isbool(row[f[0]])):
